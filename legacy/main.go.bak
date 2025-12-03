@@ -1,0 +1,41 @@
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"gonetwatch/internal/models"
+	"gonetwatch/internal/sniffer"
+)
+
+func main() {
+	// Check for root privileges (often needed for pcap)
+	if os.Geteuid() != 0 {
+		fmt.Println("Warning: This application typically requires root privileges to capture packets.")
+		fmt.Println("Please run with sudo if you encounter permission errors.")
+	}
+
+	// Find default device
+	// For now, let's just list devices and pick the first one or let user specify
+	// In a real scenario, we might want to be smarter.
+	// For this "Hello World" phase, we'll try to find a suitable interface.
+	
+	// TODO: Add device selection logic
+	device := "eth0" // Default fallback
+    if len(os.Args) > 1 {
+        device = os.Args[1]
+    }
+
+	fmt.Printf("Starting GoNetWatch on %s...\n", device)
+
+	packetChan := make(chan models.PacketData)
+
+	// Start sniffer in a goroutine
+	go sniffer.StartCapture(device, packetChan)
+
+	// Main loop to print packets (temporary UI)
+	fmt.Println("Press Ctrl+C to exit.")
+	for packet := range packetChan {
+		fmt.Printf("[%s] Packet captured: %d bytes\n", packet.Timestamp.Format("15:04:05"), packet.Length)
+	}
+}
