@@ -25,6 +25,10 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.topTalkers = m.stats.GetTopTalkers(10)
 		m.protocols = m.stats.GetProtocolStats()
 
+		// Phase 5: Fetch domain log and alerts
+		m.domainLog = m.stats.GetDomainLog()
+		m.alerts = m.stats.GetAlerts()
+
 		// Update table
 		rows := make([]table.Row, len(m.topTalkers))
 		for i, stat := range m.topTalkers {

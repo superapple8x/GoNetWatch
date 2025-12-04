@@ -18,6 +18,10 @@ type AnalysisModel struct {
 	table         table.Model
 	interfaceName string
 	mitmTarget    string
+
+	// Phase 5: Deep Inspection
+	domainLog []analysis.DomainEntry
+	alerts    []analysis.Alert
 }
 
 func NewAnalysisModel(stats *analysis.TrafficStats, iface string, mitmTarget string) AnalysisModel {
@@ -61,4 +65,3 @@ func tickCmd() tea.Cmd {
 		return TickMsg(t)
 	})
 }
-

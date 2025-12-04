@@ -16,4 +16,10 @@ type EkLayers struct {
 	TCPDstPort []string `json:"tcp_dstport,omitempty"`
 	UDPSrcPort []string `json:"udp_srcport,omitempty"`
 	UDPDstPort []string `json:"udp_dstport,omitempty"`
+
+	// Layer 7 Metadata (Phase 5)
+	DnsQuery []string `json:"dns_qry_name,omitempty"`
+	TlsSni   []string `json:"tls_handshake_extensions_server_name,omitempty"`
+	HttpHost []string `json:"http_host,omitempty"`
+	EthDst   []string `json:"eth_dst,omitempty"`
 }

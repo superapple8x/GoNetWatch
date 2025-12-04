@@ -25,6 +25,10 @@ func StartCapture(interfaceName string, captureFilter string, out chan<- models.
 		"-e", "ip.src", "-e", "ip.dst",
 		"-e", "tcp.srcport", "-e", "tcp.dstport",
 		"-e", "udp.srcport", "-e", "udp.dstport",
+		"-e", "dns.qry.name",
+		"-e", "tls.handshake.extensions_server_name",
+		"-e", "http.host",
+		"-e", "eth.dst",
 	}
 
 	if interfaceName != "" {
@@ -54,7 +58,7 @@ func StartCapture(interfaceName string, captureFilter string, out chan<- models.
 
 		for scanner.Scan() {
 			line := scanner.Text()
-			
+
 			if strings.TrimSpace(line) == "" {
 				continue
 			}
@@ -128,6 +132,20 @@ func convertToModel(ek EkPacket) *models.PacketData {
 	} else {
 		// Might be ICMP or other IP protocol
 		p.Protocol = "OTHER"
+	}
+
+	// Extract Hostname (Phase 5) - Priority: TLS SNI > DNS Query > HTTP Host
+	if len(ek.Layers.TlsSni) > 0 && ek.Layers.TlsSni[0] != "" {
+		p.Hostname = ek.Layers.TlsSni[0]
+	} else if len(ek.Layers.DnsQuery) > 0 && ek.Layers.DnsQuery[0] != "" {
+		p.Hostname = ek.Layers.DnsQuery[0]
+	} else if len(ek.Layers.HttpHost) > 0 && ek.Layers.HttpHost[0] != "" {
+		p.Hostname = ek.Layers.HttpHost[0]
+	}
+
+	// Extract Ethernet Destination MAC (for broadcast detection)
+	if len(ek.Layers.EthDst) > 0 {
+		p.EthDst = ek.Layers.EthDst[0]
 	}
 
 	return p

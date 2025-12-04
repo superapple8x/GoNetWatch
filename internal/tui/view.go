@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -19,6 +20,26 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1).
 			Margin(0, 1)
+
+	// Phase 5: New styles for domain log and alerts
+	alertStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#FF0000")).
+			Bold(true).
+			Padding(0, 1)
+
+	normalStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#00FF00")).
+			Bold(true)
+
+	domainSNIStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#00FF00")) // Green for HTTPS
+
+	domainDNSStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFF00")) // Yellow for DNS
+
+	domainHTTPStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF0000")) // Red for HTTP
 )
 
 func (m AnalysisModel) View() string {
@@ -28,34 +49,125 @@ func (m AnalysisModel) View() string {
 	}
 	title := titleStyle.Render(headerText)
 
-	// QoS Panel
-	qos := fmt.Sprintf("Bandwidth: %s\nPacket Rate: %.2f PPS", formatBps(m.bps), m.pps)
-	qosBox := infoStyle.Render(qos)
+	// Build 3-column layout
+	leftCol := renderMetricsPanel(m)
+	centerCol := renderTrafficPanel(m)
+	rightCol := renderSecurityPanel(m)
 
-	// Top Talkers
-	ttBox := infoStyle.Render("Top Talkers\n" + m.table.View())
+	// Join columns horizontally
+	columns := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, centerCol, rightCol)
 
-	// Protocols
-	var protoStrs []string
-	limit := 5
-	if len(m.protocols) < limit {
-		limit = len(m.protocols)
-	}
-
-	for i := 0; i < limit; i++ {
-		p := m.protocols[i]
-		protoStrs = append(protoStrs, fmt.Sprintf("%s: %d", p.Protocol, p.Count))
-	}
-	if len(protoStrs) == 0 {
-		protoStrs = append(protoStrs, "Waiting for data...")
-	}
-	protoBox := infoStyle.Render("Protocols:\n" + strings.Join(protoStrs, "\n"))
-
-	// Layout
-	row1 := lipgloss.JoinHorizontal(lipgloss.Top, qosBox, protoBox)
-	body := lipgloss.JoinVertical(lipgloss.Left, title, row1, ttBox)
+	body := lipgloss.JoinVertical(lipgloss.Left, title, columns)
 
 	return body + "\nPress q to quit."
+}
+
+// renderMetricsPanel creates the left column with QoS metrics
+func renderMetricsPanel(m AnalysisModel) string {
+	var content strings.Builder
+
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("📊 Metrics"))
+	content.WriteString("\n\n")
+
+	content.WriteString(fmt.Sprintf("Bandwidth: %s\n", formatBps(m.bps)))
+	content.WriteString(fmt.Sprintf("Packet Rate: %.2f PPS\n\n", m.pps))
+
+	content.WriteString(fmt.Sprintf("Interface: %s\n", m.interfaceName))
+	if m.mitmTarget != "" {
+		content.WriteString(fmt.Sprintf("MITM Target: %s\n", m.mitmTarget))
+	}
+
+	return infoStyle.Width(30).Render(content.String())
+}
+
+// renderTrafficPanel creates the center column with traffic data
+func renderTrafficPanel(m AnalysisModel) string {
+	var content strings.Builder
+
+	// Top Talkers section
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("🔝 Top Talkers"))
+	content.WriteString("\n")
+	content.WriteString(m.table.View())
+	content.WriteString("\n\n")
+
+	// Domain Log section
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("🌐 Live Domain Log"))
+	content.WriteString("\n")
+
+	if len(m.domainLog) == 0 {
+		content.WriteString(lipgloss.NewStyle().Italic(true).Faint(true).Render("Waiting for traffic..."))
+	} else {
+		// Show last 15 entries (newest last)
+		start := 0
+		if len(m.domainLog) > 15 {
+			start = len(m.domainLog) - 15
+		}
+
+		for i := start; i < len(m.domainLog); i++ {
+			entry := m.domainLog[i]
+			timestamp := entry.Timestamp.Format("15:04:05")
+
+			// Color-code by source
+			var styledDomain string
+			switch entry.Source {
+			case "SNI":
+				styledDomain = domainSNIStyle.Render(entry.Hostname)
+			case "DNS":
+				styledDomain = domainDNSStyle.Render(entry.Hostname)
+			case "HTTP":
+				styledDomain = domainHTTPStyle.Render(entry.Hostname)
+			default:
+				styledDomain = entry.Hostname
+			}
+
+			content.WriteString(fmt.Sprintf("[%s] %s (%s)\n", timestamp, styledDomain, entry.Source))
+		}
+	}
+
+	return infoStyle.Width(45).Render(content.String())
+}
+
+// renderSecurityPanel creates the right column with security monitoring
+func renderSecurityPanel(m AnalysisModel) string {
+	var content strings.Builder
+
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("🛡️  Anomaly Detection"))
+	content.WriteString("\n\n")
+
+	if len(m.alerts) == 0 {
+		// No alerts - system normal
+		content.WriteString(normalStyle.Render("✓ System Normal"))
+		content.WriteString("\n\n")
+		content.WriteString(lipgloss.NewStyle().Faint(true).Render("No anomalies detected"))
+	} else {
+		// Show recent alerts
+		content.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Render(fmt.Sprintf("%d Active Alert(s)", len(m.alerts))))
+		content.WriteString("\n\n")
+
+		for _, alert := range m.alerts {
+			age := time.Since(alert.Timestamp)
+
+			// Flash red for alerts less than 10 seconds old
+			var alertText string
+			if age < 10*time.Second {
+				alertText = alertStyle.Render(fmt.Sprintf("[!] %s", alert.Type))
+			} else {
+				alertText = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("#FF6B6B")).
+					Bold(true).
+					Render(fmt.Sprintf("[!] %s", alert.Type))
+			}
+
+			content.WriteString(alertText)
+			content.WriteString("\n")
+			content.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("    %s", alert.Message)))
+			content.WriteString("\n")
+			content.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("    %s ago", formatDuration(age))))
+			content.WriteString("\n\n")
+		}
+	}
+
+	return infoStyle.Width(35).Render(content.String())
 }
 
 func formatBps(bps float64) string {
@@ -68,3 +180,12 @@ func formatBps(bps float64) string {
 	return fmt.Sprintf("%.2f bps", bps)
 }
 
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
+}

@@ -19,6 +19,13 @@ type ProtocolStat struct {
 	Count    int64
 }
 
+// DomainEntry represents a captured domain name with metadata.
+type DomainEntry struct {
+	Hostname  string
+	Timestamp time.Time
+	Source    string // "SNI", "DNS", or "HTTP"
+}
+
 // TrafficStats tracks network statistics.
 type TrafficStats struct {
 	mu             sync.Mutex
@@ -28,14 +35,22 @@ type TrafficStats struct {
 	lastTick       time.Time
 	ipBytes        map[string]int
 	protocolCounts map[string]int64
+
+	// Phase 5: Deep Inspection
+	domainLog       []DomainEntry
+	maxDomainLog    int
+	anomalyDetector *AnomalyDetector
 }
 
 // NewTrafficStats creates a new TrafficStats instance.
 func NewTrafficStats() *TrafficStats {
 	return &TrafficStats{
-		lastTick:       time.Now(),
-		ipBytes:        make(map[string]int),
-		protocolCounts: make(map[string]int64),
+		lastTick:        time.Now(),
+		ipBytes:         make(map[string]int),
+		protocolCounts:  make(map[string]int64),
+		domainLog:       make([]DomainEntry, 0),
+		maxDomainLog:    50, // Keep last 50 domain entries
+		anomalyDetector: NewAnomalyDetector(),
 	}
 }
 
@@ -60,6 +75,34 @@ func (s *TrafficStats) ProcessPacket(pkt models.PacketData) {
 		proto = "Unknown"
 	}
 	s.protocolCounts[proto]++
+
+	// Phase 5: Track domain names
+	if pkt.Hostname != "" {
+		// Determine source type based on which field was populated
+		source := "HTTP"
+		if pkt.DstPort == 443 || pkt.DstPort == 853 {
+			source = "SNI" // HTTPS or DNS over TLS
+		} else if pkt.DstPort == 53 || pkt.Protocol == "UDP" {
+			source = "DNS" // DNS query
+		}
+
+		entry := DomainEntry{
+			Hostname:  pkt.Hostname,
+			Timestamp: time.Now(),
+			Source:    source,
+		}
+		s.domainLog = append(s.domainLog, entry)
+
+		// Keep circular buffer (last N entries)
+		if len(s.domainLog) > s.maxDomainLog {
+			s.domainLog = s.domainLog[len(s.domainLog)-s.maxDomainLog:]
+		}
+	}
+
+	// Phase 5: Run anomaly detection (unlocked - detector has its own mutex)
+	s.mu.Unlock()
+	s.anomalyDetector.ProcessPacket(pkt)
+	s.mu.Lock()
 }
 
 // GetRates returns the bandwidth (bps) and packet rate (pps) since the last call.
@@ -131,4 +174,21 @@ func (s *TrafficStats) GetProtocolStats() []ProtocolStat {
 	})
 
 	return stats
+}
+
+// GetDomainLog returns the recent domain log entries (Phase 5).
+func (s *TrafficStats) GetDomainLog() []DomainEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Return a copy to avoid race conditions
+	result := make([]DomainEntry, len(s.domainLog))
+	copy(result, s.domainLog)
+	return result
+}
+
+// GetAlerts returns recent security alerts (Phase 5).
+func (s *TrafficStats) GetAlerts() []Alert {
+	// Anomaly detector has its own mutex, no need to lock here
+	return s.anomalyDetector.GetRecentAlerts(5)
 }

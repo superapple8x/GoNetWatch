@@ -11,4 +11,8 @@ type PacketData struct {
 	DstPort   int
 	Protocol  string
 	Length    int
+
+	// Layer 7 Metadata (Phase 5)
+	Hostname string // Best available hostname (SNI > DNS > HTTP)
+	EthDst   string // Destination MAC address (for broadcast detection)
 }
