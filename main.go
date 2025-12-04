@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"gonetwatch/internal/analysis"
@@ -28,11 +29,11 @@ func main() {
 	// MITM Setup
 	var captureFilter string
 	var mitmTarget string
-	
+
 	if *targetIP != "" && *gatewayIP != "" {
 		fmt.Println("Starting MITM setup...")
 		mitmTarget = *targetIP
-		
+
 		// 1. Enable IP Forwarding
 		if err := spoofer.EnableIPForwarding(); err != nil {
 			log.Fatalf("Failed to enable IP forwarding: %v", err)
@@ -68,8 +69,12 @@ func main() {
 	// Create channel for packets
 	packetChan := make(chan models.PacketData, 1000)
 
+	// Create context for cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Start Tshark capture
-	err := tshark.StartCapture(*interfaceName, captureFilter, packetChan)
+	err := tshark.StartCapture(ctx, *interfaceName, captureFilter, packetChan)
 	if err != nil {
 		log.Fatalf("Error starting capture: %v", err)
 	}
@@ -88,12 +93,12 @@ func main() {
 	// We pass the mitmTarget string to update the UI header
 	model := tui.NewAnalysisModel(stats, *interfaceName, mitmTarget)
 	p := tea.NewProgram(model, tea.WithAltScreen()) // Use AltScreen for full terminal UI
-	
+
 	if _, err := p.Run(); err != nil {
 		// TUI exited with error
 		log.Printf("Error running TUI: %v", err)
 		// Defers will run here
 	}
-	
+
 	// Normal exit - defers will run
 }

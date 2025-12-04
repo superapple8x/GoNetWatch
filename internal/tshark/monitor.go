@@ -2,6 +2,7 @@ package tshark
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"gonetwatch/internal/models"
@@ -13,7 +14,7 @@ import (
 )
 
 // StartCapture begins the tshark process and streams parsed packets to the out channel.
-func StartCapture(interfaceName string, captureFilter string, out chan<- models.PacketData) error {
+func StartCapture(ctx context.Context, interfaceName string, captureFilter string, out chan<- models.PacketData) error {
 	// Construct the tshark command
 	// -l: flush stdout after each packet
 	// -n: disable name resolution
@@ -39,7 +40,7 @@ func StartCapture(interfaceName string, captureFilter string, out chan<- models.
 		args = append(args, "-f", captureFilter)
 	}
 
-	cmd := exec.Command("tshark", args...)
+	cmd := exec.CommandContext(ctx, "tshark", args...)
 
 	cmd.Stderr = os.Stderr
 
@@ -54,7 +55,11 @@ func StartCapture(interfaceName string, captureFilter string, out chan<- models.
 
 	go func() {
 		scanner := bufio.NewScanner(stdout)
-		defer cmd.Wait() // simple cleanup, though we might need better process management later
+
+		// Wait for command to finish (which happens when context is canceled)
+		defer func() {
+			cmd.Wait()
+		}()
 
 		for scanner.Scan() {
 			line := scanner.Text()

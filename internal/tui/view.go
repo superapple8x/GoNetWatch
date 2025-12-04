@@ -77,7 +77,15 @@ func renderMetricsPanel(m AnalysisModel) string {
 		content.WriteString(fmt.Sprintf("MITM Target: %s\n", m.mitmTarget))
 	}
 
-	return infoStyle.Width(30).Render(content.String())
+	width := 30
+	if m.width > 0 {
+		width = int(float64(m.width) * 0.25) // 25%
+		if width < 20 {
+			width = 20
+		}
+	}
+
+	return infoStyle.Width(width).Render(content.String())
 }
 
 // renderTrafficPanel creates the center column with traffic data
@@ -124,7 +132,15 @@ func renderTrafficPanel(m AnalysisModel) string {
 		}
 	}
 
-	return infoStyle.Width(45).Render(content.String())
+	width := 45
+	if m.width > 0 {
+		width = int(float64(m.width) * 0.40) // 40%
+		if width < 30 {
+			width = 30
+		}
+	}
+
+	return infoStyle.Width(width).Render(content.String())
 }
 
 // renderSecurityPanel creates the right column with security monitoring
@@ -167,7 +183,15 @@ func renderSecurityPanel(m AnalysisModel) string {
 		}
 	}
 
-	return infoStyle.Width(35).Render(content.String())
+	width := 35
+	if m.width > 0 {
+		width = int(float64(m.width) * 0.35) // 35%
+		if width < 25 {
+			width = 25
+		}
+	}
+
+	return infoStyle.Width(width).Render(content.String())
 }
 
 func formatBps(bps float64) string {

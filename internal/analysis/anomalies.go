@@ -16,6 +16,26 @@ const (
 	AnomalyDoS            AnomalyType = "POSSIBLE_DOS"
 )
 
+// Config holds configuration for the anomaly detector.
+type Config struct {
+	BroadcastThreshold int           // Broadcasts per second
+	DoSThreshold       int           // Packets per second per IP
+	UnsecureCooldown   time.Duration // Cooldown for unsecure protocol alerts
+	CleanupInterval    time.Duration // Interval for memory cleanup
+	DataRetention      time.Duration // How long to keep tracking data
+}
+
+// DefaultConfig returns the default configuration.
+func DefaultConfig() Config {
+	return Config{
+		BroadcastThreshold: 50,
+		DoSThreshold:       500,
+		UnsecureCooldown:   10 * time.Second,
+		CleanupInterval:    1 * time.Minute,
+		DataRetention:      5 * time.Minute,
+	}
+}
+
 // Alert represents a detected security anomaly.
 type Alert struct {
 	Type      AnomalyType
@@ -28,10 +48,11 @@ type Alert struct {
 type AnomalyDetector struct {
 	mu sync.Mutex
 
+	config Config
+
 	// Broadcast Storm Detection
-	broadcastCount     int
-	broadcastWindow    time.Time
-	broadcastThreshold int // Trigger alert if > this many broadcasts/sec
+	broadcastCount  int
+	broadcastWindow time.Time
 
 	// Unsecure Protocol Detection (throttling)
 	unsecureAlerts map[string]time.Time // key: "IP:port" -> last alert time
@@ -39,23 +60,24 @@ type AnomalyDetector struct {
 	// DoS Detection (per-IP packet rate)
 	ipPacketCount map[string]int       // IP -> packet count
 	ipWindow      map[string]time.Time // IP -> window start time
-	dosThreshold  int                  // Trigger alert if > this many packets/sec
 
 	// Alert History (circular buffer)
 	alerts    []Alert
 	maxAlerts int
+
+	lastCleanup time.Time
 }
 
 // NewAnomalyDetector creates a new anomaly detection engine.
-func NewAnomalyDetector() *AnomalyDetector {
+func NewAnomalyDetector(cfg Config) *AnomalyDetector {
 	return &AnomalyDetector{
-		broadcastThreshold: 50,  // 50 broadcasts/sec
-		dosThreshold:       500, // 500 packets/sec from single IP
-		unsecureAlerts:     make(map[string]time.Time),
-		ipPacketCount:      make(map[string]int),
-		ipWindow:           make(map[string]time.Time),
-		alerts:             make([]Alert, 0),
-		maxAlerts:          20, // Keep last 20 alerts
+		config:         cfg,
+		unsecureAlerts: make(map[string]time.Time),
+		ipPacketCount:  make(map[string]int),
+		ipWindow:       make(map[string]time.Time),
+		alerts:         make([]Alert, 0),
+		maxAlerts:      20, // Keep last 20 alerts
+		lastCleanup:    time.Now(),
 	}
 }
 
@@ -66,6 +88,12 @@ func (ad *AnomalyDetector) ProcessPacket(pkt models.PacketData) {
 
 	now := time.Now()
 
+	// Lazy cleanup
+	if now.Sub(ad.lastCleanup) > ad.config.CleanupInterval {
+		ad.cleanup(now)
+		ad.lastCleanup = now
+	}
+
 	// Rule 1: Broadcast Storm Detection
 	ad.detectBroadcastStorm(pkt, now)
 
@@ -74,6 +102,24 @@ func (ad *AnomalyDetector) ProcessPacket(pkt models.PacketData) {
 
 	// Rule 3: DoS Pattern Detection
 	ad.detectDoS(pkt, now)
+}
+
+// cleanup removes old entries to prevent memory leaks.
+func (ad *AnomalyDetector) cleanup(now time.Time) {
+	// Cleanup unsecure alerts
+	for key, lastAlert := range ad.unsecureAlerts {
+		if now.Sub(lastAlert) > ad.config.DataRetention {
+			delete(ad.unsecureAlerts, key)
+		}
+	}
+
+	// Cleanup DoS tracking
+	for ip, windowStart := range ad.ipWindow {
+		if now.Sub(windowStart) > ad.config.DataRetention {
+			delete(ad.ipWindow, ip)
+			delete(ad.ipPacketCount, ip)
+		}
+	}
 }
 
 // detectBroadcastStorm checks for excessive broadcast packets.
@@ -89,7 +135,7 @@ func (ad *AnomalyDetector) detectBroadcastStorm(pkt models.PacketData, now time.
 		ad.broadcastCount++
 
 		// Trigger alert if threshold exceeded
-		if ad.broadcastCount > ad.broadcastThreshold {
+		if ad.broadcastCount > ad.config.BroadcastThreshold {
 			alert := Alert{
 				Type:      AnomalyBroadcastStorm,
 				Source:    "Network",
@@ -113,11 +159,11 @@ func (ad *AnomalyDetector) detectUnsecureProtocol(pkt models.PacketData, now tim
 	}
 
 	if protocolName, isUnsecure := unsecurePorts[pkt.DstPort]; isUnsecure {
-		// Throttle alerts: max 1 per IP/port combination per 10 seconds
+		// Throttle alerts: max 1 per IP/port combination per cooldown period
 		key := fmt.Sprintf("%s:%d", pkt.SrcIP, pkt.DstPort)
 		lastAlert, exists := ad.unsecureAlerts[key]
 
-		if !exists || now.Sub(lastAlert) > 10*time.Second {
+		if !exists || now.Sub(lastAlert) > ad.config.UnsecureCooldown {
 			alert := Alert{
 				Type:      AnomalyUnsecure,
 				Source:    pkt.SrcIP,
@@ -151,7 +197,7 @@ func (ad *AnomalyDetector) detectDoS(pkt models.PacketData, now time.Time) {
 	ad.ipPacketCount[pkt.SrcIP]++
 
 	// Trigger alert if threshold exceeded
-	if ad.ipPacketCount[pkt.SrcIP] > ad.dosThreshold {
+	if ad.ipPacketCount[pkt.SrcIP] > ad.config.DoSThreshold {
 		alert := Alert{
 			Type:      AnomalyDoS,
 			Source:    pkt.SrcIP,

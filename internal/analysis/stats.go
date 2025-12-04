@@ -50,7 +50,7 @@ func NewTrafficStats() *TrafficStats {
 		protocolCounts:  make(map[string]int64),
 		domainLog:       make([]DomainEntry, 0),
 		maxDomainLog:    50, // Keep last 50 domain entries
-		anomalyDetector: NewAnomalyDetector(),
+		anomalyDetector: NewAnomalyDetector(DefaultConfig()),
 	}
 }
 

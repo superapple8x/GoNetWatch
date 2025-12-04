@@ -22,6 +22,10 @@ type AnalysisModel struct {
 	// Phase 5: Deep Inspection
 	domainLog []analysis.DomainEntry
 	alerts    []analysis.Alert
+
+	// UI State
+	width  int
+	height int
 }
 
 func NewAnalysisModel(stats *analysis.TrafficStats, iface string, mitmTarget string) AnalysisModel {

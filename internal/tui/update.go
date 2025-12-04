@@ -17,6 +17,19 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+		// Adjust table height dynamically
+		// Reserve space for header, title, and domain log
+		// We'll give the table about 1/3 of the screen height
+		tableHeight := m.height / 3
+		if tableHeight < 5 {
+			tableHeight = 5
+		}
+		m.table.SetHeight(tableHeight)
+
 	case TickMsg:
 		// Fetch stats
 		bps, pps := m.stats.GetRates()
@@ -42,4 +55,3 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }
-
