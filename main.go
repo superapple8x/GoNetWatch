@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"gonetwatch/internal/analysis"
+	"gonetwatch/internal/discovery"
 	"gonetwatch/internal/models"
 	"gonetwatch/internal/spoofer"
 	"gonetwatch/internal/tshark"
 	"gonetwatch/internal/tui"
 	"log"
+	"os"
+	"strconv"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -29,6 +34,46 @@ func main() {
 	// MITM Setup
 	var captureFilter string
 	var mitmTarget string
+
+	// Interactive Discovery if target is not specified
+	if *targetIP == "" {
+		fmt.Printf("No target specified. Scanning network on %s...\n", *interfaceName)
+		hosts, err := discovery.Scan(*interfaceName)
+		if err != nil {
+			log.Fatalf("Network scan failed: %v", err)
+		}
+
+		if len(hosts) == 0 {
+			fmt.Println("No hosts found.")
+			return
+		}
+
+		fmt.Println("\nAvailable Targets:")
+		for i, host := range hosts {
+			fmt.Printf("[%d] IP: %s\tMAC: %s\n", i+1, host.IP, host.MAC)
+		}
+
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("\nSelect target (number): ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+		index, err := strconv.Atoi(input)
+		if err != nil || index < 1 || index > len(hosts) {
+			log.Fatal("Invalid selection")
+		}
+
+		selectedHost := hosts[index-1]
+		*targetIP = selectedHost.IP.String()
+		fmt.Printf("Selected Target: %s\n", *targetIP)
+
+		// Ask for Gateway
+		fmt.Print("Enter Gateway IP (leave empty to attempt auto-detection or skip MITM): ")
+		gwInput, _ := reader.ReadString('\n')
+		gwInput = strings.TrimSpace(gwInput)
+		if gwInput != "" {
+			*gatewayIP = gwInput
+		}
+	}
 
 	if *targetIP != "" && *gatewayIP != "" {
 		fmt.Println("Starting MITM setup...")
