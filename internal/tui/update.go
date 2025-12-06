@@ -53,6 +53,25 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.table.SetHeight(tableHeight)
 
+		// Adjust table column widths for smaller terminals
+		switch {
+		case m.width < 80:
+			m.table.SetColumns([]table.Column{
+				{Title: "Src", Width: 16},
+				{Title: "Bytes", Width: 10},
+			})
+		case m.width < 120:
+			m.table.SetColumns([]table.Column{
+				{Title: "Source IP", Width: 18},
+				{Title: "Bytes", Width: 12},
+			})
+		default:
+			m.table.SetColumns([]table.Column{
+				{Title: "Source IP", Width: 20},
+				{Title: "Bytes", Width: 15},
+			})
+		}
+
 	case TickMsg:
 		// Fetch stats
 		bps, pps := m.stats.GetRates()
@@ -78,4 +97,3 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }
-

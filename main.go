@@ -123,8 +123,10 @@ func main() {
 			engine.Stop()
 		}()
 
-		// 4. Set Filter to avoid double counting
-		// We want to ignore packets originating from our own MAC (re-transmissions)
+		// 4. Keep the original “working” filter: drop host-sourced frames to avoid
+		// double-counting forwarded packets. The ARP MITM ensures the target's traffic
+		// passes through us, so capturing everything except our own transmissions is sufficient
+		// and historically accurate.
 		captureFilter = fmt.Sprintf("not ether src %s", engine.HostMAC.String())
 		fmt.Printf("MITM Active. Filter: %s\n", captureFilter)
 	} else if *targetIP != "" || *gatewayIP != "" {

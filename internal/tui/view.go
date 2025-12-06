@@ -43,10 +43,15 @@ var (
 )
 
 func (m AnalysisModel) View() string {
-	headerText := fmt.Sprintf("GoNetWatch - Monitoring: %s", m.interfaceName)
+	headerText := fmt.Sprintf("GoNetWatch - %s", m.interfaceName)
 	if m.mitmTarget != "" {
-		headerText += fmt.Sprintf(" [MITM Target: %s]", m.mitmTarget)
+		headerText += fmt.Sprintf(" [MITM: %s]", m.mitmTarget)
 	}
+
+	if m.width > 0 {
+		headerText = truncateMiddle(headerText, m.width-4)
+	}
+
 	title := titleStyle.Render(headerText)
 
 	// Build 3-column layout
@@ -54,8 +59,17 @@ func (m AnalysisModel) View() string {
 	centerCol := renderTrafficPanel(m)
 	rightCol := renderSecurityPanel(m)
 
-	// Join columns horizontally
-	columns := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, centerCol, rightCol)
+	// Choose layout based on available width
+	var columns string
+	switch {
+	case m.width >= 120:
+		columns = lipgloss.JoinHorizontal(lipgloss.Top, leftCol, centerCol, rightCol)
+	case m.width >= 90:
+		sidebar := lipgloss.JoinVertical(lipgloss.Left, leftCol, rightCol)
+		columns = lipgloss.JoinHorizontal(lipgloss.Top, sidebar, centerCol)
+	default:
+		columns = lipgloss.JoinVertical(lipgloss.Left, leftCol, rightCol, centerCol)
+	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left, title, columns)
 
@@ -105,13 +119,26 @@ func renderMetricsPanel(m AnalysisModel) string {
 
 	width := 30
 	if m.width > 0 {
-		width = int(float64(m.width) * 0.25) // 25%
-		if width < 20 {
-			width = 20
+		switch {
+		case m.width < 70:
+			width = m.width - 4
+			if width < 18 {
+				width = 18
+			}
+		case m.width < 90:
+			width = int(float64(m.width) * 0.45)
+			if width < 22 {
+				width = 22
+			}
+		default:
+			width = int(float64(m.width) * 0.25) // 25%
+			if width < 20 {
+				width = 20
+			}
 		}
 	}
 
-	return infoStyle.Width(width).Render(content.String())
+	return infoStyle.Copy().Margin(0, marginForWidth(m.width)).Width(width).Render(content.String())
 }
 
 // renderTrafficPanel creates the center column with traffic data
@@ -128,13 +155,21 @@ func renderTrafficPanel(m AnalysisModel) string {
 	content.WriteString(lipgloss.NewStyle().Bold(true).Render("🌐 Live Domain Log"))
 	content.WriteString("\n")
 
+	maxEntries := 15
+	switch {
+	case m.width < 60:
+		maxEntries = 6
+	case m.width < 90:
+		maxEntries = 10
+	}
+
 	if len(m.domainLog) == 0 {
 		content.WriteString(lipgloss.NewStyle().Italic(true).Faint(true).Render("Waiting for traffic..."))
 	} else {
-		// Show last 15 entries (newest last)
+		// Show last N entries (newest last)
 		start := 0
-		if len(m.domainLog) > 15 {
-			start = len(m.domainLog) - 15
+		if len(m.domainLog) > maxEntries {
+			start = len(m.domainLog) - maxEntries
 		}
 
 		for i := start; i < len(m.domainLog); i++ {
@@ -145,13 +180,13 @@ func renderTrafficPanel(m AnalysisModel) string {
 			var styledDomain string
 			switch entry.Source {
 			case "SNI":
-				styledDomain = domainSNIStyle.Render(entry.Hostname)
+				styledDomain = domainSNIStyle.Render(truncateEnd(entry.Hostname, domainWidth(m.width)))
 			case "DNS":
-				styledDomain = domainDNSStyle.Render(entry.Hostname)
+				styledDomain = domainDNSStyle.Render(truncateEnd(entry.Hostname, domainWidth(m.width)))
 			case "HTTP":
-				styledDomain = domainHTTPStyle.Render(entry.Hostname)
+				styledDomain = domainHTTPStyle.Render(truncateEnd(entry.Hostname, domainWidth(m.width)))
 			default:
-				styledDomain = entry.Hostname
+				styledDomain = truncateEnd(entry.Hostname, domainWidth(m.width))
 			}
 
 			content.WriteString(fmt.Sprintf("[%s] %s (%s)\n", timestamp, styledDomain, entry.Source))
@@ -160,13 +195,26 @@ func renderTrafficPanel(m AnalysisModel) string {
 
 	width := 45
 	if m.width > 0 {
-		width = int(float64(m.width) * 0.40) // 40%
-		if width < 30 {
-			width = 30
+		switch {
+		case m.width < 70:
+			width = m.width - 4
+			if width < 26 {
+				width = 26
+			}
+		case m.width < 120:
+			width = int(float64(m.width) * 0.55)
+			if width < 32 {
+				width = 32
+			}
+		default:
+			width = int(float64(m.width) * 0.40) // 40%
+			if width < 30 {
+				width = 30
+			}
 		}
 	}
 
-	return infoStyle.Width(width).Render(content.String())
+	return infoStyle.Copy().Margin(0, marginForWidth(m.width)).Width(width).Render(content.String())
 }
 
 // renderSecurityPanel creates the right column with security monitoring
@@ -186,7 +234,16 @@ func renderSecurityPanel(m AnalysisModel) string {
 		content.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Render(fmt.Sprintf("%d Active Alert(s)", len(m.alerts))))
 		content.WriteString("\n\n")
 
-		for _, alert := range m.alerts {
+		maxAlerts := 4
+		if m.width < 80 {
+			maxAlerts = 2
+		}
+		alerts := m.alerts
+		if len(alerts) > maxAlerts {
+			alerts = alerts[:maxAlerts]
+		}
+
+		for _, alert := range alerts {
 			age := time.Since(alert.Timestamp)
 
 			// Flash red for alerts less than 10 seconds old
@@ -202,7 +259,7 @@ func renderSecurityPanel(m AnalysisModel) string {
 
 			content.WriteString(alertText)
 			content.WriteString("\n")
-			content.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("    %s", alert.Message)))
+			content.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("    %s", truncateEnd(alert.Message, alertWidth(m.width)))))
 			content.WriteString("\n")
 			content.WriteString(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf("    %s ago", formatDuration(age))))
 			content.WriteString("\n\n")
@@ -211,13 +268,26 @@ func renderSecurityPanel(m AnalysisModel) string {
 
 	width := 35
 	if m.width > 0 {
-		width = int(float64(m.width) * 0.35) // 35%
-		if width < 25 {
-			width = 25
+		switch {
+		case m.width < 70:
+			width = m.width - 4
+			if width < 22 {
+				width = 22
+			}
+		case m.width < 120:
+			width = int(float64(m.width) * 0.45) // 45% when paired in sidebar
+			if width < 26 {
+				width = 26
+			}
+		default:
+			width = int(float64(m.width) * 0.35) // 35%
+			if width < 25 {
+				width = 25
+			}
 		}
 	}
 
-	return infoStyle.Width(width).Render(content.String())
+	return infoStyle.Copy().Margin(0, marginForWidth(m.width)).Width(width).Render(content.String())
 }
 
 func formatBps(bps float64) string {
@@ -238,4 +308,69 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh", int(d.Hours()))
+}
+
+// marginForWidth reduces horizontal margin when space is tight.
+func marginForWidth(width int) int {
+	if width > 0 && width < 80 {
+		return 0
+	}
+	return 1
+}
+
+// truncateEnd trims a string and adds an ellipsis if it exceeds max characters.
+func truncateEnd(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+// truncateMiddle shortens a string by replacing the middle with an ellipsis.
+func truncateMiddle(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	half := (max - 3) / 2
+	return s[:half] + "..." + s[len(s)-half:]
+}
+
+func domainWidth(width int) int {
+	if width == 0 {
+		return 30
+	}
+	switch {
+	case width < 60:
+		return 18
+	case width < 90:
+		return 22
+	default:
+		return 32
+	}
+}
+
+func alertWidth(width int) int {
+	if width == 0 {
+		return 40
+	}
+	switch {
+	case width < 70:
+		return 28
+	case width < 90:
+		return 34
+	default:
+		return 48
+	}
 }
