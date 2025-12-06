@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gonetwatch/internal/analysis"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -14,8 +15,13 @@ func GenerateSessionReport(stats *analysis.TrafficStats, format string) (string,
 		return "", fmt.Errorf("unsupported format: %s", format)
 	}
 
+	reportDir := "reports"
+	if err := os.MkdirAll(reportDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create report directory: %v", err)
+	}
+
 	timestamp := time.Now().Format("20060102_150405")
-	filename := fmt.Sprintf("report_%s.html", timestamp)
+	filename := filepath.Join(reportDir, fmt.Sprintf("report_%s.html", timestamp))
 
 	file, err := os.Create(filename)
 	if err != nil {
