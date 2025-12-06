@@ -59,7 +59,33 @@ func (m AnalysisModel) View() string {
 
 	body := lipgloss.JoinVertical(lipgloss.Left, title, columns)
 
+	if m.quitting {
+		return overlay(body, m.width, m.height)
+	}
+
 	return body + "\nPress q to quit."
+}
+
+func overlay(background string, width, height int) string {
+	modalStyle := lipgloss.NewStyle().
+		Width(50).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2).
+		Align(lipgloss.Center)
+
+	question := lipgloss.NewStyle().Bold(true).Render("Save Session Report?")
+	help := lipgloss.NewStyle().Faint(true).Render("(y/n)")
+
+	modal := modalStyle.Render(lipgloss.JoinVertical(lipgloss.Center, question, "\n", help))
+
+	// Center the modal
+	// We can't easily do true layering in pure string return without a layout manager,
+	// but we can replace the content or append it.
+	// For a better UX, let's just return the modal centered on a blank screen or
+	// try to place it.
+	// Simplest approach: Just return the modal.
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
 }
 
 // renderMetricsPanel creates the left column with QoS metrics

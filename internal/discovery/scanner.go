@@ -214,9 +214,9 @@ func sendARPRequest(handle *pcap.Handle, iface *net.Interface, srcIP, dstIP net.
 		ProtAddressSize:   4,
 		Operation:         layers.ARPRequest,
 		SourceHwAddress:   []byte(iface.HardwareAddr),
-		SourceProtAddress: []byte(srcIP),
+		SourceProtAddress: []byte(srcIP.To4()),
 		DstHwAddress:      []byte{0, 0, 0, 0, 0, 0},
-		DstProtAddress:    []byte(dstIP),
+		DstProtAddress:    []byte(dstIP.To4()),
 	}
 
 	buf := gopacket.NewSerializeBuffer()

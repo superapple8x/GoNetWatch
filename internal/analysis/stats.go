@@ -39,6 +39,7 @@ type TrafficStats struct {
 	// Phase 5: Deep Inspection
 	domainLog       []DomainEntry
 	maxDomainLog    int
+	allDomains      map[string]DomainEntry // Full history for session report
 	anomalyDetector *AnomalyDetector
 }
 
@@ -49,7 +50,8 @@ func NewTrafficStats() *TrafficStats {
 		ipBytes:         make(map[string]int),
 		protocolCounts:  make(map[string]int64),
 		domainLog:       make([]DomainEntry, 0),
-		maxDomainLog:    50, // Keep last 50 domain entries
+		maxDomainLog:    50, // Keep last 50 domain entries for UI
+		allDomains:      make(map[string]DomainEntry),
 		anomalyDetector: NewAnomalyDetector(DefaultConfig()),
 	}
 }
@@ -93,9 +95,14 @@ func (s *TrafficStats) ProcessPacket(pkt models.PacketData) {
 		}
 		s.domainLog = append(s.domainLog, entry)
 
-		// Keep circular buffer (last N entries)
+		// Keep circular buffer (last N entries) for UI
 		if len(s.domainLog) > s.maxDomainLog {
 			s.domainLog = s.domainLog[len(s.domainLog)-s.maxDomainLog:]
+		}
+
+		// Keep full history for report (unique domains)
+		if _, exists := s.allDomains[pkt.Hostname]; !exists {
+			s.allDomains[pkt.Hostname] = entry
 		}
 	}
 
@@ -191,4 +198,32 @@ func (s *TrafficStats) GetDomainLog() []DomainEntry {
 func (s *TrafficStats) GetAlerts() []Alert {
 	// Anomaly detector has its own mutex, no need to lock here
 	return s.anomalyDetector.GetRecentAlerts(5)
+}
+
+// GetAllDomains returns all unique domains visited during the session.
+func (s *TrafficStats) GetAllDomains() []DomainEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	domains := make([]DomainEntry, 0, len(s.allDomains))
+	for _, entry := range s.allDomains {
+		domains = append(domains, entry)
+	}
+	// Sort by timestamp
+	sort.Slice(domains, func(i, j int) bool {
+		return domains[i].Timestamp.Before(domains[j].Timestamp)
+	})
+	return domains
+}
+
+// GetTotalDataTransferred returns the total bytes processed.
+func (s *TrafficStats) GetTotalDataTransferred() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.totalBytes
+}
+
+// GetAllAlerts returns all alerts generated during the session.
+func (s *TrafficStats) GetAllAlerts() []Alert {
+	return s.anomalyDetector.GetAllAlerts()
 }

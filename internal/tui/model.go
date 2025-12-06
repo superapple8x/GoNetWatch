@@ -24,8 +24,10 @@ type AnalysisModel struct {
 	alerts    []analysis.Alert
 
 	// UI State
-	width  int
-	height int
+	width       int
+	height      int
+	quitting    bool
+	reportSaved bool
 }
 
 func NewAnalysisModel(stats *analysis.TrafficStats, iface string, mitmTarget string) AnalysisModel {

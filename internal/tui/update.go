@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"gonetwatch/internal/reporting"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,9 +13,31 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.quitting {
+			switch msg.String() {
+			case "y", "Y":
+				// Generate Report
+				_, err := reporting.GenerateSessionReport(m.stats, "html")
+				if err == nil {
+					m.reportSaved = true
+					// Small delay or just quit? Let's quit immediately for now,
+					// or we could show a "Report Saved!" message.
+					// For simplicity, we quit.
+				}
+				return m, tea.Quit
+			case "n", "N":
+				return m, tea.Quit
+			case "esc", "q": // Cancel quit
+				m.quitting = false
+				return m, nil
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
-			return m, tea.Quit
+			m.quitting = true
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:

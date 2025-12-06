@@ -61,9 +61,12 @@ type AnomalyDetector struct {
 	ipPacketCount map[string]int       // IP -> packet count
 	ipWindow      map[string]time.Time // IP -> window start time
 
-	// Alert History (circular buffer)
+	// Alert History (circular buffer for UI)
 	alerts    []Alert
 	maxAlerts int
+
+	// Full Alert History for Report
+	allAlerts []Alert
 
 	lastCleanup time.Time
 }
@@ -77,6 +80,7 @@ func NewAnomalyDetector(cfg Config) *AnomalyDetector {
 		ipWindow:       make(map[string]time.Time),
 		alerts:         make([]Alert, 0),
 		maxAlerts:      20, // Keep last 20 alerts
+		allAlerts:      make([]Alert, 0),
 		lastCleanup:    time.Now(),
 	}
 }
@@ -213,12 +217,14 @@ func (ad *AnomalyDetector) detectDoS(pkt models.PacketData, now time.Time) {
 
 // addAlert adds an alert to the history (circular buffer).
 func (ad *AnomalyDetector) addAlert(alert Alert) {
+	// Add to circular buffer for UI
 	ad.alerts = append(ad.alerts, alert)
-
-	// Keep only last maxAlerts
 	if len(ad.alerts) > ad.maxAlerts {
 		ad.alerts = ad.alerts[len(ad.alerts)-ad.maxAlerts:]
 	}
+
+	// Add to full history for report
+	ad.allAlerts = append(ad.allAlerts, alert)
 }
 
 // GetRecentAlerts returns the most recent alerts (thread-safe).
@@ -240,5 +246,15 @@ func (ad *AnomalyDetector) GetRecentAlerts(limit int) []Alert {
 	result := make([]Alert, len(ad.alerts)-start)
 	copy(result, ad.alerts[start:])
 
+	return result
+}
+
+// GetAllAlerts returns all alerts generated during the session.
+func (ad *AnomalyDetector) GetAllAlerts() []Alert {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+
+	result := make([]Alert, len(ad.allAlerts))
+	copy(result, ad.allAlerts)
 	return result
 }
