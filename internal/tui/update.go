@@ -78,3 +78,4 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }
+

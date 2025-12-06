@@ -4,3 +4,4 @@
 /gonetwatch
 *.pcap
 *.pcapng
+/reports

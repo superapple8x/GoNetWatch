@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -23,6 +24,11 @@ func main() {
 	interfaceName := flag.String("i", "", "Network interface to capture from (e.g., eth0, wlan0)")
 	targetIP := flag.String("target", "", "Target IP for MITM (requires -gateway)")
 	gatewayIP := flag.String("gateway", "", "Gateway IP for MITM (requires -target)")
+	scanTimeout := flag.Duration("scan-timeout", 10*time.Second, "Timeout for network discovery scan")
+	scanIdleWait := flag.Duration("scan-idle-wait", 500*time.Millisecond, "Time to wait for late ARP replies after probing")
+	scanRate := flag.Duration("scan-rate", 50*time.Microsecond, "Delay between ARP probe sends during discovery")
+	scanMaxHosts := flag.Int("scan-max-hosts", 4096, "Maximum hosts to probe during discovery (caps large subnets). Set 0 or negative to scan the full subnet.")
+	scanPromisc := flag.Bool("scan-promisc", true, "Open capture in promiscuous mode during discovery")
 	flag.Parse()
 
 	if *interfaceName == "" {
@@ -38,9 +44,23 @@ func main() {
 	// Interactive Discovery if target is not specified
 	if *targetIP == "" {
 		fmt.Printf("No target specified. Scanning network on %s...\n", *interfaceName)
-		hosts, err := discovery.Scan(*interfaceName)
+
+		// Create a context with a timeout for the scan
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), *scanTimeout)
+		defer scanCancel()
+
+		hosts, err := discovery.Scan(scanCtx, *interfaceName, &discovery.ScanConfig{
+			RateLimit: *scanRate,
+			IdleWait:  *scanIdleWait,
+			MaxHosts:  *scanMaxHosts,
+			Promisc:   scanPromisc,
+		})
 		if err != nil {
-			log.Fatalf("Network scan failed: %v", err)
+			if err == context.DeadlineExceeded {
+				fmt.Println("Scan timed out.")
+			} else {
+				log.Fatalf("Network scan failed: %v", err)
+			}
 		}
 
 		if len(hosts) == 0 {

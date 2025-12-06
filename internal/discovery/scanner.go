@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -14,9 +15,60 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
+// ScanConfig controls the scanning behavior.
+type ScanConfig struct {
+	// RateLimit introduces a delay between ARP requests to avoid overrunning buffers.
+	// Defaults to 50µs if unset or <= 0.
+	RateLimit time.Duration
+	// IdleWait is how long to wait for late replies after sending probes.
+	// Defaults to 500ms if unset or <= 0.
+	IdleWait time.Duration
+	// MaxHosts caps how many hosts we will probe in large subnets to avoid long scans.
+	// Defaults to 4096 if unset. Set to 0 or a negative number to disable the cap.
+	MaxHosts int
+	// Promisc controls whether we open the interface in promiscuous mode.
+	// Defaults to true if unset.
+	Promisc *bool
+}
+
+func applyDefaults(cfg *ScanConfig) ScanConfig {
+	if cfg == nil {
+		return ScanConfig{
+			RateLimit: 50 * time.Microsecond,
+			IdleWait:  500 * time.Millisecond,
+			MaxHosts:  4096,
+			Promisc:   ptrBool(true),
+		}
+	}
+
+	out := *cfg
+	if out.RateLimit <= 0 {
+		out.RateLimit = 50 * time.Microsecond
+	}
+	if out.IdleWait <= 0 {
+		out.IdleWait = 500 * time.Millisecond
+	}
+	if out.MaxHosts == 0 {
+		// Explicitly disable cap when zero.
+		out.MaxHosts = -1
+	} else if out.MaxHosts < 0 {
+		out.MaxHosts = -1
+	}
+	if out.MaxHosts > 0 && out.MaxHosts < 512 {
+		// Keep a sane minimum if capped.
+		out.MaxHosts = 512
+	}
+	if out.Promisc == nil {
+		out.Promisc = ptrBool(true)
+	}
+	return out
+}
+
 // Scan performs an ARP scan on the specified interface to discover hosts.
 // It returns a list of discovered hosts.
-func Scan(interfaceName string) ([]Host, error) {
+func Scan(ctx context.Context, interfaceName string, cfg *ScanConfig) ([]Host, error) {
+	config := applyDefaults(cfg)
+
 	// Get interface details
 	iface, err := net.InterfaceByName(interfaceName)
 	if err != nil {
@@ -48,7 +100,7 @@ func Scan(interfaceName string) ([]Host, error) {
 	}
 
 	// Open handle for reading and writing
-	handle, err := pcap.OpenLive(interfaceName, 65536, true, pcap.BlockForever)
+	handle, err := pcap.OpenLive(interfaceName, 65536, *config.Promisc, pcap.BlockForever)
 	if err != nil {
 		return nil, fmt.Errorf("could not open handle: %v", err)
 	}
@@ -74,6 +126,8 @@ func Scan(interfaceName string) ([]Host, error) {
 
 		for {
 			select {
+			case <-ctx.Done():
+				return
 			case <-doneChan:
 				return
 			case packet, ok := <-in:
@@ -137,24 +191,95 @@ func Scan(interfaceName string) ([]Host, error) {
 
 	// Send ARP requests
 	// We iterate through the subnet.
-	// Note: This can be optimized.
-	ips := ipsInSubnet(localNet)
-	for _, targetIP := range ips {
-		// Don't scan network address, broadcast, or self
-		if targetIP.Equal(localIP) || targetIP.Equal(localNet.IP) {
+	// Optimization: Iterator approach to avoid pre-allocating millions of IPs for large subnets.
+
+	// Calculate network address (start)
+	// Calculate network address (start)
+	// We use localIP which we forced to 4 bytes earlier. localNet.IP might be 16 bytes.
+	currentIP := make(net.IP, len(localIP))
+	copy(currentIP, localIP)
+	mask := localNet.Mask
+
+	// Ensure mask is used safely.
+	// If mask is 4 bytes, currentIP (4 bytes) is safe.
+	// If mask is 16 bytes, we only use the first 4 bytes since currentIP is 4 bytes.
+	for i := range currentIP {
+		if i < len(mask) {
+			currentIP[i] &= mask[i]
+		}
+	}
+
+	// Calculate broadcast address for filtering
+	broadcastIP := make(net.IP, len(currentIP))
+	copy(broadcastIP, currentIP)
+	for i := range broadcastIP {
+		if i < len(mask) {
+			broadcastIP[i] |= ^mask[i]
+		}
+	}
+
+	// Use a ticker to limit the rate slightly to avoid overwhelming the local buffer
+	ticker := time.NewTicker(config.RateLimit)
+	defer ticker.Stop()
+
+	// Flag to skip the very first IP (Network Address) if it matches currentIP
+	// (It will match initially)
+	first := true
+	scanned := 0
+
+	for ; localNet.Contains(currentIP); inc(currentIP) {
+		// Cap scan size for very large subnets
+		if config.MaxHosts > 0 && scanned >= config.MaxHosts {
+			break
+		}
+
+		// Check context
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+
+		// Clone IP for sending because inc modifies it in place,
+		// and while sendARPRequest doesn't store it, it's safer/cleaner to use a copy
+		// if we were passing it to a goroutine.
+		// Here, sendARPRequest uses it synchronously for serialization.
+		// However, we need to be careful about not skipping the first one if logic demands,
+		// but typically we skip network address (first) and broadcast (last).
+
+		if first {
+			first = false
+			continue // Skip network address
+		}
+
+		if currentIP.Equal(broadcastIP) {
+			continue // Skip broadcast address
+		}
+
+		// Don't scan self
+		if currentIP.Equal(localIP) {
 			continue
 		}
 
-		if err := sendARPRequest(handle, iface, localIP, targetIP); err != nil {
+		if err := sendARPRequest(handle, iface, localIP, currentIP); err != nil {
 			// Log error but continue?
 			continue
 		}
-		// Small delay to avoid flooding
-		time.Sleep(2 * time.Millisecond)
+		scanned++
 	}
 
-	// Wait for replies
-	time.Sleep(2 * time.Second)
+	// Wait for replies for a short period, or until context is done
+	// We already have a goroutine reading into hostsChan.
+	// We just need to wait a bit for stragglers.
+
+	waitTimer := time.NewTimer(config.IdleWait)
+	defer waitTimer.Stop()
+
+	select {
+	case <-ctx.Done():
+	case <-waitTimer.C:
+	}
+
 	close(doneChan)
 	close(hostsChan)
 
@@ -175,22 +300,6 @@ func Scan(interfaceName string) ([]Host, error) {
 	return result, nil
 }
 
-// ipsInSubnet returns all IPs in the subnet
-func ipsInSubnet(ipnet *net.IPNet) []net.IP {
-	var ips []net.IP
-	for ip := ipnet.IP.Mask(ipnet.Mask); ipnet.Contains(ip); inc(ip) {
-		newIP := make(net.IP, len(ip))
-		copy(newIP, ip)
-		ips = append(ips, newIP)
-	}
-	// Remove network address and broadcast address if possible,
-	// but the loop above includes them. The caller handles filtering.
-	if len(ips) > 2 {
-		return ips[1 : len(ips)-1]
-	}
-	return ips
-}
-
 func inc(ip net.IP) {
 	for j := len(ip) - 1; j >= 0; j-- {
 		ip[j]++
@@ -198,6 +307,10 @@ func inc(ip net.IP) {
 			break
 		}
 	}
+}
+
+func ptrBool(v bool) *bool {
+	return &v
 }
 
 // sendARPRequest sends a single ARP request
