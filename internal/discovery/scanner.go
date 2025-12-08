@@ -100,7 +100,8 @@ func Scan(ctx context.Context, interfaceName string, cfg *ScanConfig) ([]Host, e
 	}
 
 	// Open handle for reading and writing
-	handle, err := pcap.OpenLive(interfaceName, 65536, *config.Promisc, pcap.BlockForever)
+	// Use a timeout to ensure we can check context cancellation
+	handle, err := pcap.OpenLive(interfaceName, 65536, *config.Promisc, 1*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("could not open handle: %v", err)
 	}
@@ -112,15 +113,21 @@ func Scan(ctx context.Context, interfaceName string, cfg *ScanConfig) ([]Host, e
 	}
 
 	// Channel to collect results
-	hostsChan := make(chan Host)
+	hostsChan := make(chan Host, 100) // Buffer to prevent blocking the reader
 	doneChan := make(chan struct{})
 
 	// Map to store unique hosts
 	discoveredHosts := make(map[string]Host)
 	var mu sync.Mutex
 
+	// WaitGroups for synchronization
+	var wgReader sync.WaitGroup
+	var wgCollector sync.WaitGroup
+
 	// Start reading packets in a goroutine
+	wgReader.Add(1)
 	go func() {
+		defer wgReader.Done()
 		src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
 		in := src.Packets()
 
@@ -167,19 +174,10 @@ func Scan(ctx context.Context, interfaceName string, cfg *ScanConfig) ([]Host, e
 		}
 	}()
 
-	// Send ARP requests
-	// We'll iterate through all IPs in the subnet and send an ARP request
-	// This is a simple implementation. For larger subnets, this might be slow.
-	// Assuming /24 for simplicity or iterating appropriately.
-
-	// Calculate start and end IP
-	// ip := localIP.Mask(localNet.Mask) // Unused
-
-	// Simple iteration for /24 or smaller.
-	// For this MVP, we'll just assume standard iteration logic or use a helper.
-
-	// Start a goroutine to collect results while we send
+	// Start a goroutine to collect results
+	wgCollector.Add(1)
 	go func() {
+		defer wgCollector.Done()
 		for host := range hostsChan {
 			mu.Lock()
 			if _, exists := discoveredHosts[host.IP.String()]; !exists {
@@ -194,28 +192,27 @@ func Scan(ctx context.Context, interfaceName string, cfg *ScanConfig) ([]Host, e
 	// Optimization: Iterator approach to avoid pre-allocating millions of IPs for large subnets.
 
 	// Calculate network address (start)
-	// Calculate network address (start)
-	// We use localIP which we forced to 4 bytes earlier. localNet.IP might be 16 bytes.
-	currentIP := make(net.IP, len(localIP))
-	copy(currentIP, localIP)
-	mask := localNet.Mask
-
-	// Ensure mask is used safely.
-	// If mask is 4 bytes, currentIP (4 bytes) is safe.
-	// If mask is 16 bytes, we only use the first 4 bytes since currentIP is 4 bytes.
-	for i := range currentIP {
-		if i < len(mask) {
-			currentIP[i] &= mask[i]
-		}
+	// We use localIP which we forced to 4 bytes earlier.
+	// We need to ensure we use the correct mask for the 4-byte IP.
+	ones, _ := localNet.Mask.Size()
+	mask := net.CIDRMask(ones, 32)
+	
+	// Apply mask to get network address
+	currentIP := localIP.Mask(mask)
+	if currentIP == nil {
+		// Should not happen if we forced localIP to 4 bytes and used /32 mask base
+		return nil, fmt.Errorf("could not calculate network address")
 	}
+	
+	// Ensure currentIP is 4 bytes (Mask returns a slice, might be referencing backing array or new)
+	// Make a clean copy to be safe for iteration
+	currentIP = currentIP.To4()
 
 	// Calculate broadcast address for filtering
 	broadcastIP := make(net.IP, len(currentIP))
 	copy(broadcastIP, currentIP)
 	for i := range broadcastIP {
-		if i < len(mask) {
-			broadcastIP[i] |= ^mask[i]
-		}
+		broadcastIP[i] |= ^mask[i]
 	}
 
 	// Use a ticker to limit the rate slightly to avoid overwhelming the local buffer
@@ -280,8 +277,11 @@ func Scan(ctx context.Context, interfaceName string, cfg *ScanConfig) ([]Host, e
 	case <-waitTimer.C:
 	}
 
-	close(doneChan)
-	close(hostsChan)
+	// Clean shutdown sequence to avoid panics and ensure all data is collected
+	close(doneChan)   // Signal reader to stop
+	wgReader.Wait()   // Wait for reader to finish (it might be in a select)
+	close(hostsChan)  // Close hosts channel
+	wgCollector.Wait() // Wait for collector to finish draining hostsChan
 
 	// Convert map to slice
 	mu.Lock()
