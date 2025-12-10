@@ -28,10 +28,15 @@ type DomainEntry struct {
 
 // TrafficStats tracks network statistics.
 type TrafficStats struct {
-	mu             sync.Mutex // Protects basic stats
-	totalBytes     int64
-	windowBytes    int64
-	windowPackets  int64
+	mu            sync.Mutex // Protects basic stats
+	totalBytes    int64
+	windowBytes   int64
+	windowPackets int64
+
+	// Per-IP Window Stats for Bandwidth Calculation
+	windowRxBytes map[string]int64
+	windowTxBytes map[string]int64
+
 	lastTick       time.Time
 	ipBytes        map[string]int
 	protocolCounts map[string]int64
@@ -45,12 +50,22 @@ type TrafficStats struct {
 	anomalyDetector *AnomalyDetector
 }
 
+// TrafficMetrics holds calculated rates for a time window.
+type TrafficMetrics struct {
+	GlobalBps   float64
+	GlobalPps   float64
+	IPBps       map[string]float64 // Total BPS (Rx+Tx) per IP
+	DurationSec float64
+}
+
 // NewTrafficStats creates a new TrafficStats instance.
 func NewTrafficStats() *TrafficStats {
 	s := &TrafficStats{
 		lastTick:        time.Now(),
 		ipBytes:         make(map[string]int),
 		protocolCounts:  make(map[string]int64),
+		windowRxBytes:   make(map[string]int64),
+		windowTxBytes:   make(map[string]int64),
 		analysisChan:    make(chan models.PacketData, 2048), // Buffer for analysis
 		domainLog:       make([]DomainEntry, 0),
 		maxDomainLog:    50, // Keep last 50 domain entries for UI
@@ -72,6 +87,14 @@ func (s *TrafficStats) ProcessPacket(pkt models.PacketData) {
 	s.totalBytes += int64(pkt.Length)
 	s.windowBytes += int64(pkt.Length)
 	s.windowPackets++
+
+	// Update Windowed Per-IP Stats
+	if pkt.SrcIP != "" {
+		s.windowTxBytes[pkt.SrcIP] += int64(pkt.Length)
+	}
+	if pkt.DstIP != "" {
+		s.windowRxBytes[pkt.DstIP] += int64(pkt.Length)
+	}
 
 	// Update Top Talkers (Source IP)
 	if pkt.SrcIP != "" {
@@ -135,34 +158,65 @@ func (s *TrafficStats) analysisWorker() {
 	}
 }
 
-// GetRates returns the bandwidth (bps) and packet rate (pps) since the last call.
-func (s *TrafficStats) GetRates() (float64, float64) {
+// GetMetrics calculates and returns bandwidth metrics since the last call.
+func (s *TrafficStats) GetMetrics() TrafficMetrics {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
 	duration := now.Sub(s.lastTick).Seconds()
-	if duration == 0 {
-		return 0, 0
+
+	metrics := TrafficMetrics{
+		IPBps:       make(map[string]float64),
+		DurationSec: duration,
 	}
 
-	// Bytes * 8 = Bits
-	bps := (float64(s.windowBytes) * 8) / duration
-	pps := float64(s.windowPackets) / duration
+	if duration > 0 {
+		// Global Stats
+		metrics.GlobalBps = (float64(s.windowBytes) * 8) / duration
+		metrics.GlobalPps = float64(s.windowPackets) / duration
+
+		// Per-IP Stats
+		// We iterate over all IPs seen in this window (Rx or Tx)
+		// We can essentially union the keys from Rx and Tx maps
+		seenIPs := make(map[string]struct{})
+		for ip := range s.windowTxBytes {
+			seenIPs[ip] = struct{}{}
+		}
+		for ip := range s.windowRxBytes {
+			seenIPs[ip] = struct{}{}
+		}
+
+		for ip := range seenIPs {
+			tx := s.windowTxBytes[ip]
+			rx := s.windowRxBytes[ip]
+			totalBits := float64(tx+rx) * 8
+			metrics.IPBps[ip] = totalBits / duration
+		}
+	}
 
 	// Reset window
 	s.windowBytes = 0
 	s.windowPackets = 0
+	s.windowTxBytes = make(map[string]int64)
+	s.windowRxBytes = make(map[string]int64)
 	s.lastTick = now
 
-	return bps, pps
+	return metrics
+}
+
+// GetRates (Deprecated) returns global rates. kept for backward compatibility if needed,
+// but GetMetrics is preferred.
+func (s *TrafficStats) GetRates() (float64, float64) {
+	m := s.GetMetrics()
+	return m.GlobalBps, m.GlobalPps
 }
 
 // GetBandwidth returns the bandwidth in bits per second since the last call.
-// Deprecated: Use GetRates instead.
+// Deprecated: Use GetMetrics instead.
 func (s *TrafficStats) GetBandwidth() float64 {
-	bps, _ := s.GetRates()
-	return bps
+	m := s.GetMetrics()
+	return m.GlobalBps
 }
 
 // GetTopTalkers returns the top N IPs by volume.

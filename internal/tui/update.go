@@ -74,9 +74,17 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TickMsg:
 		// Fetch stats
-		bps, pps := m.stats.GetRates()
-		m.bps = bps
-		m.pps = pps
+		metrics := m.stats.GetMetrics()
+
+		// If MITM Target is active, show ITS bandwidth, otherwise show Global
+		if m.mitmTarget != "" {
+			m.bps = metrics.IPBps[m.mitmTarget]
+		} else {
+			m.bps = metrics.GlobalBps
+		}
+
+		m.pps = metrics.GlobalPps // PPS is still interesting globally, or we could filter it too if we want
+
 		m.topTalkers = m.stats.GetTopTalkers(10)
 		m.protocols = m.stats.GetProtocolStats()
 

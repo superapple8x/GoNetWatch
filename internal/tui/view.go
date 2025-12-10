@@ -109,7 +109,12 @@ func renderMetricsPanel(m AnalysisModel) string {
 	content.WriteString(lipgloss.NewStyle().Bold(true).Render("📊 Metrics"))
 	content.WriteString("\n\n")
 
-	content.WriteString(fmt.Sprintf("Bandwidth: %s\n", formatBps(m.bps)))
+	// Determine label
+	bwLabel := "Bandwidth"
+	if m.mitmTarget != "" {
+		bwLabel = "Target Bandwidth"
+	}
+	content.WriteString(fmt.Sprintf("%s: %s\n", bwLabel, formatBps(m.bps)))
 	content.WriteString(fmt.Sprintf("Packet Rate: %.2f PPS\n\n", m.pps))
 
 	content.WriteString(fmt.Sprintf("Interface: %s\n", m.interfaceName))
