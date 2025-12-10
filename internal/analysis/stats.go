@@ -28,7 +28,7 @@ type DomainEntry struct {
 
 // TrafficStats tracks network statistics.
 type TrafficStats struct {
-	mu             sync.Mutex
+	mu             sync.Mutex // Protects basic stats
 	totalBytes     int64
 	windowBytes    int64
 	windowPackets  int64
@@ -36,7 +36,9 @@ type TrafficStats struct {
 	ipBytes        map[string]int
 	protocolCounts map[string]int64
 
-	// Phase 5: Deep Inspection
+	// Phase 5: Deep Inspection (Async Pipeline)
+	analysisChan    chan models.PacketData
+	domainMu        sync.Mutex // Protects domain logging
 	domainLog       []DomainEntry
 	maxDomainLog    int
 	allDomains      map[string]DomainEntry // Full history for session report
@@ -45,21 +47,27 @@ type TrafficStats struct {
 
 // NewTrafficStats creates a new TrafficStats instance.
 func NewTrafficStats() *TrafficStats {
-	return &TrafficStats{
+	s := &TrafficStats{
 		lastTick:        time.Now(),
 		ipBytes:         make(map[string]int),
 		protocolCounts:  make(map[string]int64),
+		analysisChan:    make(chan models.PacketData, 2048), // Buffer for analysis
 		domainLog:       make([]DomainEntry, 0),
 		maxDomainLog:    50, // Keep last 50 domain entries for UI
 		allDomains:      make(map[string]DomainEntry),
 		anomalyDetector: NewAnomalyDetector(DefaultConfig()),
 	}
+
+	// Start background analysis worker
+	go s.analysisWorker()
+
+	return s
 }
 
 // ProcessPacket updates stats with a new packet.
+// This is the "Fast Path" - keep it lightweight!
 func (s *TrafficStats) ProcessPacket(pkt models.PacketData) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	s.totalBytes += int64(pkt.Length)
 	s.windowBytes += int64(pkt.Length)
@@ -77,39 +85,54 @@ func (s *TrafficStats) ProcessPacket(pkt models.PacketData) {
 		proto = "Unknown"
 	}
 	s.protocolCounts[proto]++
-
-	// Phase 5: Track domain names
-	if pkt.Hostname != "" {
-		// Determine source type based on which field was populated
-		source := "HTTP"
-		if pkt.DstPort == 443 || pkt.DstPort == 853 {
-			source = "SNI" // HTTPS or DNS over TLS
-		} else if pkt.DstPort == 53 || pkt.Protocol == "UDP" {
-			source = "DNS" // DNS query
-		}
-
-		entry := DomainEntry{
-			Hostname:  pkt.Hostname,
-			Timestamp: time.Now(),
-			Source:    source,
-		}
-		s.domainLog = append(s.domainLog, entry)
-
-		// Keep circular buffer (last N entries) for UI
-		if len(s.domainLog) > s.maxDomainLog {
-			s.domainLog = s.domainLog[len(s.domainLog)-s.maxDomainLog:]
-		}
-
-		// Keep full history for report (unique domains)
-		if _, exists := s.allDomains[pkt.Hostname]; !exists {
-			s.allDomains[pkt.Hostname] = entry
-		}
-	}
-
-	// Phase 5: Run anomaly detection (unlocked - detector has its own mutex)
 	s.mu.Unlock()
-	s.anomalyDetector.ProcessPacket(pkt)
-	s.mu.Lock()
+
+	// Send to analysis worker (Non-blocking drop if full)
+	select {
+	case s.analysisChan <- pkt:
+	default:
+		// Channel full: Drop packet for analysis ONLY.
+		// We already counted it for bandwidth stats, so accuracy is preserved.
+	}
+}
+
+// analysisWorker processes packets for Deep Inspection and Anomaly Detection.
+func (s *TrafficStats) analysisWorker() {
+	for pkt := range s.analysisChan {
+		// 1. Domain Logging
+		if pkt.Hostname != "" {
+			s.domainMu.Lock()
+			// Determine source type based on which field was populated
+			source := "HTTP"
+			if pkt.DstPort == 443 || pkt.DstPort == 853 {
+				source = "SNI" // HTTPS or DNS over TLS
+			} else if pkt.DstPort == 53 || pkt.Protocol == "UDP" {
+				source = "DNS" // DNS query
+			}
+
+			entry := DomainEntry{
+				Hostname:  pkt.Hostname,
+				Timestamp: time.Now(),
+				Source:    source,
+			}
+			s.domainLog = append(s.domainLog, entry)
+
+			// Keep circular buffer (last N entries) for UI
+			if len(s.domainLog) > s.maxDomainLog {
+				s.domainLog = s.domainLog[len(s.domainLog)-s.maxDomainLog:]
+			}
+
+			// Keep full history for report (unique domains)
+			if _, exists := s.allDomains[pkt.Hostname]; !exists {
+				s.allDomains[pkt.Hostname] = entry
+			}
+			s.domainMu.Unlock()
+		}
+
+		// 2. Anomaly Detection
+		// AnomalyDetector has its own internal locking, so this is safe.
+		s.anomalyDetector.ProcessPacket(pkt)
+	}
 }
 
 // GetRates returns the bandwidth (bps) and packet rate (pps) since the last call.
@@ -185,8 +208,8 @@ func (s *TrafficStats) GetProtocolStats() []ProtocolStat {
 
 // GetDomainLog returns the recent domain log entries (Phase 5).
 func (s *TrafficStats) GetDomainLog() []DomainEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.domainMu.Lock()
+	defer s.domainMu.Unlock()
 
 	// Return a copy to avoid race conditions
 	result := make([]DomainEntry, len(s.domainLog))
@@ -202,8 +225,8 @@ func (s *TrafficStats) GetAlerts() []Alert {
 
 // GetAllDomains returns all unique domains visited during the session.
 func (s *TrafficStats) GetAllDomains() []DomainEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.domainMu.Lock()
+	defer s.domainMu.Unlock()
 
 	domains := make([]DomainEntry, 0, len(s.allDomains))
 	for _, entry := range s.allDomains {
