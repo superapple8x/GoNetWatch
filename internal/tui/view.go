@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"gonetwatch/internal/analysis"
 	"strings"
 	"time"
 
@@ -55,7 +56,9 @@ func (m AnalysisModel) View() string {
 	title := titleStyle.Render(headerText)
 
 	// Build 3-column layout
-	leftCol := renderMetricsPanel(m)
+	metricsPanel := renderMetricsPanel(m)
+	portsPanel := renderPortsPanel(m)
+	leftCol := lipgloss.JoinVertical(lipgloss.Left, metricsPanel, portsPanel)
 	centerCol := renderTrafficPanel(m)
 	rightCol := renderSecurityPanel(m)
 
@@ -120,6 +123,62 @@ func renderMetricsPanel(m AnalysisModel) string {
 	content.WriteString(fmt.Sprintf("Interface: %s\n", m.interfaceName))
 	if m.mitmTarget != "" {
 		content.WriteString(fmt.Sprintf("MITM Target: %s\n", m.mitmTarget))
+	}
+
+	width := 30
+	if m.width > 0 {
+		switch {
+		case m.width < 70:
+			width = m.width - 4
+			if width < 18 {
+				width = 18
+			}
+		case m.width < 90:
+			width = int(float64(m.width) * 0.45)
+			if width < 22 {
+				width = 22
+			}
+		default:
+			width = int(float64(m.width) * 0.25) // 25%
+			if width < 20 {
+				width = 20
+			}
+		}
+	}
+
+	return infoStyle.Copy().Margin(0, marginForWidth(m.width)).Width(width).Render(content.String())
+}
+
+// renderPortsPanel creates a panel showing port usage statistics
+func renderPortsPanel(m AnalysisModel) string {
+	var content strings.Builder
+
+	content.WriteString(lipgloss.NewStyle().Bold(true).Render("🔌 Top Ports"))
+	content.WriteString("\n\n")
+
+	if len(m.portStats) == 0 {
+		content.WriteString(lipgloss.NewStyle().Faint(true).Render("No data..."))
+	} else {
+		for _, stat := range m.portStats {
+			serviceName := analysis.GetServiceName(stat.Port)
+			// Format: "80 (HTTP): 1.2 MB" or just "80: 1.2 MB"
+			label := fmt.Sprintf("%d", stat.Port)
+			if serviceName != fmt.Sprintf("%d", stat.Port) {
+				label = fmt.Sprintf("%s (%d)", serviceName, stat.Port)
+			}
+
+			// Show bytes
+			bytesStr := ""
+			if stat.Bytes >= 1e6 {
+				bytesStr = fmt.Sprintf("%.1f MB", float64(stat.Bytes)/1e6)
+			} else if stat.Bytes >= 1e3 {
+				bytesStr = fmt.Sprintf("%.1f KB", float64(stat.Bytes)/1e3)
+			} else {
+				bytesStr = fmt.Sprintf("%d B", stat.Bytes)
+			}
+
+			content.WriteString(fmt.Sprintf("%-15s %s\n", truncateEnd(label, 15), bytesStr))
+		}
 	}
 
 	width := 30

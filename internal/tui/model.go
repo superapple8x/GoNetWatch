@@ -15,6 +15,7 @@ type AnalysisModel struct {
 	pps           float64
 	topTalkers    []analysis.IPStat
 	protocols     []analysis.ProtocolStat
+	portStats     []analysis.PortStat
 	table         table.Model
 	interfaceName string
 	mitmTarget    string

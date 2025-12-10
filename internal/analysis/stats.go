@@ -19,6 +19,12 @@ type ProtocolStat struct {
 	Count    int64
 }
 
+// PortStat holds stats for a single port.
+type PortStat struct {
+	Port  int
+	Bytes int
+}
+
 // DomainEntry represents a captured domain name with metadata.
 type DomainEntry struct {
 	Hostname  string
@@ -32,6 +38,11 @@ type TrafficStats struct {
 	totalBytes    int64
 	windowBytes   int64
 	windowPackets int64
+	// smoothingWindowCount controls how many windows are averaged for bandwidth.
+	// Defaults to 4 (≈1s with the 250ms UI tick).
+	smoothingWindowCount int
+	bandwidthHistory     []float64
+	ipBandwidthHistory   map[string][]float64
 
 	// Per-IP Window Stats for Bandwidth Calculation
 	windowRxBytes map[string]int64
@@ -40,6 +51,7 @@ type TrafficStats struct {
 	lastTick       time.Time
 	ipBytes        map[string]int
 	protocolCounts map[string]int64
+	portBytes      map[int]int
 
 	// Phase 5: Deep Inspection (Async Pipeline)
 	analysisChan    chan models.PacketData
@@ -61,16 +73,20 @@ type TrafficMetrics struct {
 // NewTrafficStats creates a new TrafficStats instance.
 func NewTrafficStats() *TrafficStats {
 	s := &TrafficStats{
-		lastTick:        time.Now(),
-		ipBytes:         make(map[string]int),
-		protocolCounts:  make(map[string]int64),
-		windowRxBytes:   make(map[string]int64),
-		windowTxBytes:   make(map[string]int64),
-		analysisChan:    make(chan models.PacketData, 2048), // Buffer for analysis
-		domainLog:       make([]DomainEntry, 0),
-		maxDomainLog:    50, // Keep last 50 domain entries for UI
-		allDomains:      make(map[string]DomainEntry),
-		anomalyDetector: NewAnomalyDetector(DefaultConfig()),
+		lastTick:             time.Now(),
+		ipBytes:              make(map[string]int),
+		protocolCounts:       make(map[string]int64),
+		portBytes:            make(map[int]int),
+		windowRxBytes:        make(map[string]int64),
+		windowTxBytes:        make(map[string]int64),
+		bandwidthHistory:     make([]float64, 0, 4),
+		ipBandwidthHistory:   make(map[string][]float64),
+		smoothingWindowCount: 4,
+		analysisChan:         make(chan models.PacketData, 2048), // Buffer for analysis
+		domainLog:            make([]DomainEntry, 0),
+		maxDomainLog:         50, // Keep last 50 domain entries for UI
+		allDomains:           make(map[string]DomainEntry),
+		anomalyDetector:      NewAnomalyDetector(DefaultConfig()),
 	}
 
 	// Start background analysis worker
@@ -108,6 +124,14 @@ func (s *TrafficStats) ProcessPacket(pkt models.PacketData) {
 		proto = "Unknown"
 	}
 	s.protocolCounts[proto]++
+
+	// Update Port Stats
+	if pkt.SrcPort > 0 {
+		s.portBytes[pkt.SrcPort] += pkt.Length
+	}
+	if pkt.DstPort > 0 {
+		s.portBytes[pkt.DstPort] += pkt.Length
+	}
 	s.mu.Unlock()
 
 	// Send to analysis worker (Non-blocking drop if full)
@@ -172,8 +196,11 @@ func (s *TrafficStats) GetMetrics() TrafficMetrics {
 	}
 
 	if duration > 0 {
-		// Global Stats
-		metrics.GlobalBps = (float64(s.windowBytes) * 8) / duration
+		windowBps := (float64(s.windowBytes) * 8) / duration
+		s.bandwidthHistory = appendAndTrim(s.bandwidthHistory, windowBps, s.smoothingWindowCount)
+
+		// Global Stats (smoothed over recent windows)
+		metrics.GlobalBps = average(s.bandwidthHistory)
 		metrics.GlobalPps = float64(s.windowPackets) / duration
 
 		// Per-IP Stats
@@ -191,7 +218,25 @@ func (s *TrafficStats) GetMetrics() TrafficMetrics {
 			tx := s.windowTxBytes[ip]
 			rx := s.windowRxBytes[ip]
 			totalBits := float64(tx+rx) * 8
-			metrics.IPBps[ip] = totalBits / duration
+			ipBps := totalBits / duration
+			s.ipBandwidthHistory[ip] = appendAndTrim(s.ipBandwidthHistory[ip], ipBps, s.smoothingWindowCount)
+		}
+
+		// For IPs not observed in this window, push a zero so their rate decays smoothly.
+		for ip := range s.ipBandwidthHistory {
+			if _, ok := seenIPs[ip]; !ok {
+				s.ipBandwidthHistory[ip] = appendAndTrim(s.ipBandwidthHistory[ip], 0, s.smoothingWindowCount)
+			}
+		}
+
+		// Compute smoothed averages, dropping stale zeroed entries to keep the map small.
+		for ip, history := range s.ipBandwidthHistory {
+			avg := average(history)
+			if avg == 0 && len(history) >= s.smoothingWindowCount {
+				delete(s.ipBandwidthHistory, ip)
+				continue
+			}
+			metrics.IPBps[ip] = avg
 		}
 	}
 
@@ -217,6 +262,30 @@ func (s *TrafficStats) GetRates() (float64, float64) {
 func (s *TrafficStats) GetBandwidth() float64 {
 	m := s.GetMetrics()
 	return m.GlobalBps
+}
+
+func appendAndTrim(history []float64, value float64, max int) []float64 {
+	if max <= 0 {
+		max = 1
+	}
+
+	history = append(history, value)
+	if len(history) > max {
+		history = history[len(history)-max:]
+	}
+	return history
+}
+
+func average(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+
+	var sum float64
+	for _, v := range values {
+		sum += v
+	}
+	return sum / float64(len(values))
 }
 
 // GetTopTalkers returns the top N IPs by volume.
@@ -257,6 +326,28 @@ func (s *TrafficStats) GetProtocolStats() []ProtocolStat {
 		return stats[i].Count > stats[j].Count
 	})
 
+	return stats
+}
+
+// GetTopPorts returns the top N ports by volume.
+func (s *TrafficStats) GetTopPorts(limit int) []PortStat {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stats := make([]PortStat, 0, len(s.portBytes))
+	for port, bytes := range s.portBytes {
+		stats = append(stats, PortStat{Port: port, Bytes: bytes})
+	}
+
+	// Sort descending by bytes
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Bytes > stats[j].Bytes
+	})
+
+	// Limit results
+	if len(stats) > limit {
+		return stats[:limit]
+	}
 	return stats
 }
 

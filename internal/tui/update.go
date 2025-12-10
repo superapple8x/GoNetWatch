@@ -87,6 +87,7 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.topTalkers = m.stats.GetTopTalkers(10)
 		m.protocols = m.stats.GetProtocolStats()
+		m.portStats = m.stats.GetTopPorts(5)
 
 		// Phase 5: Fetch domain log and alerts
 		m.domainLog = m.stats.GetDomainLog()
@@ -104,4 +105,12 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
+}
+
+func getKeys(m map[string]float64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
