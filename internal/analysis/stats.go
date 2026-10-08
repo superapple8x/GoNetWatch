@@ -36,6 +36,8 @@ type DomainEntry struct {
 type TrafficStats struct {
 	mu            sync.Mutex // Protects basic stats
 	totalBytes    int64
+	totalPackets  int64
+	startTime     time.Time
 	windowBytes   int64
 	windowPackets int64
 	// smoothingWindowCount controls how many windows are averaged for bandwidth.
@@ -72,8 +74,10 @@ type TrafficMetrics struct {
 
 // NewTrafficStats creates a new TrafficStats instance.
 func NewTrafficStats() *TrafficStats {
+	now := time.Now()
 	s := &TrafficStats{
-		lastTick:             time.Now(),
+		startTime:            now,
+		lastTick:             now,
 		ipBytes:              make(map[string]int),
 		protocolCounts:       make(map[string]int64),
 		portBytes:            make(map[int]int),
@@ -101,6 +105,7 @@ func (s *TrafficStats) ProcessPacket(pkt models.PacketData) {
 	s.mu.Lock()
 
 	s.totalBytes += int64(pkt.Length)
+	s.totalPackets++
 	s.windowBytes += int64(pkt.Length)
 	s.windowPackets++
 
@@ -389,6 +394,20 @@ func (s *TrafficStats) GetTotalDataTransferred() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.totalBytes
+}
+
+// GetTotalPackets returns the total packets processed.
+func (s *TrafficStats) GetTotalPackets() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.totalPackets
+}
+
+// GetStartTime returns when the stats engine was created.
+func (s *TrafficStats) GetStartTime() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startTime
 }
 
 // GetAllAlerts returns all alerts generated during the session.

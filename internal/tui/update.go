@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"gonetwatch/internal/reporting"
+	"time"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,9 +18,15 @@ func (m AnalysisModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y":
 				// Generate Report
-				_, err := reporting.GenerateSessionReport(m.stats, "html")
-				if err == nil {
+				meta := reporting.SessionMeta{
+					Interface:  m.interfaceName,
+					MitmTarget: m.mitmTarget,
+					StartTime:  m.stats.GetStartTime(),
+					EndTime:    time.Now(),
+				}
+				if path, err := reporting.GenerateSessionReportWithMeta(m.stats, meta, "html"); err == nil {
 					m.reportSaved = true
+					m.reportPath = path
 					// Small delay or just quit? Let's quit immediately for now,
 					// or we could show a "Report Saved!" message.
 					// For simplicity, we quit.

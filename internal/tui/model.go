@@ -29,6 +29,7 @@ type AnalysisModel struct {
 	height      int
 	quitting    bool
 	reportSaved bool
+	reportPath  string
 }
 
 func NewAnalysisModel(stats *analysis.TrafficStats, iface string, mitmTarget string) AnalysisModel {
